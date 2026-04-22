@@ -1,0 +1,70 @@
+MODEL_MAP: dict[str, str] = {
+    "claude-opus4.6": "avocado-froyo-medium",
+    "claude-sonnet4.6": "almond-croissant-low",
+    "gemini-3.1pro": "galette-medium-thinking",
+    "gpt-5.2": "oatmeal-cookie",
+    "gpt-5.4": "oval-kumquat-medium",
+}
+
+NOTION_MODEL_REVERSE_MAP: dict[str, str] = {value: key for key, value in MODEL_MAP.items()}
+
+DISPLAY_NAMES: dict[str, str] = {
+    "claude-opus4.6": "Claude Opus 4.6",
+    "claude-sonnet4.6": "Claude Sonnet 4.6",
+    "gemini-3.1pro": "Gemini 3.1 Pro",
+    "gpt-5.2": "GPT-5.2",
+    "gpt-5.4": "GPT-5.4",
+}
+
+MODEL_ICONS: dict[str, str] = {
+    "claude-opus4.6": "✳️",
+    "claude-sonnet4.6": "✳️",
+    "gemini-3.1pro": "✦",
+    "gpt-5.2": "⚙",
+    "gpt-5.4": "⚙",
+}
+
+# 默认使用 Sonnet 4.6（速度和质量的最佳平衡）
+DEFAULT_MODEL = "claude-sonnet4.6"
+
+
+def get_notion_model(model_name: str) -> str:
+    return MODEL_MAP.get(model_name, MODEL_MAP[DEFAULT_MODEL])
+
+
+def is_gemini_model(model_name: str) -> bool:
+    standard_name = get_standard_model(model_name)
+    if standard_name.startswith("gemini-"):
+        return True
+    notion_model = get_notion_model(standard_name)
+    return notion_model.startswith("vertex-") or notion_model.startswith("galette-")
+
+
+def get_thread_type(model_name: str) -> str:
+    if is_gemini_model(model_name):
+        return "markdown-chat"
+    return "workflow"
+
+
+def get_standard_model(model_name: str) -> str:
+    if model_name in MODEL_MAP:
+        return model_name
+    return NOTION_MODEL_REVERSE_MAP.get(model_name, DEFAULT_MODEL)
+
+
+def list_available_models() -> list[str]:
+    return list(MODEL_MAP.keys())
+
+
+def is_supported_model(model_name: str) -> bool:
+    return model_name in MODEL_MAP
+
+
+def get_display_name(model_name: str) -> str:
+    standard_name = get_standard_model(model_name)
+    return DISPLAY_NAMES.get(standard_name, standard_name)
+
+
+def get_model_icon(model_name: str) -> str:
+    standard_name = get_standard_model(model_name)
+    return MODEL_ICONS.get(standard_name, "")
