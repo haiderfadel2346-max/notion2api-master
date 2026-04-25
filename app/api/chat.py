@@ -30,6 +30,7 @@ from app.tool_emulation import (
     format_tool_messages_as_text,
     has_tools,
 )
+from app.prompt_injection import sanitize_delivered_text
 
 router = APIRouter()
 
@@ -62,9 +63,14 @@ def _build_response_with_tool_parsing(
     """
     tool_calls_list, remaining_text = [], response_text
 
+    # ★ Sanitize response: strip Notion AI identity boilerplate
+    response_text = sanitize_delivered_text(response_text)
+
     # Only parse tool calls if the request had tools
     if has_tools(req_body):
         tool_calls_list, remaining_text = parse_tool_calls(response_text)
+    else:
+        remaining_text = response_text
 
     if tool_calls_list:
         # Build response with tool_calls
