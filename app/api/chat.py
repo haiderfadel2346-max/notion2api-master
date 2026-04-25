@@ -19,7 +19,16 @@ from app.schemas import (
     ChatCompletionRequest,
     ChatCompletionResponse,
     ChatMessage,
+    ChatMessageResponse,
     ChatMessageResponseChoice,
+    ToolCall,
+    FunctionCall,
+)
+from app.tool_emulation import (
+    build_tools_system_prompt,
+    parse_tool_calls,
+    format_tool_messages_as_text,
+    has_tools,
 )
 
 router = APIRouter()
@@ -39,6 +48,67 @@ RECALL_INTENT_KEYWORDS = [
     "找一下",
     "搜索记忆",
 ]
+
+
+def _build_response_with_tool_parsing(
+    response_id: str,
+    model: str,
+    response_text: str,
+    req_body: ChatCompletionRequest,
+    thinking: str = "",
+) -> ChatCompletionResponse:
+    """
+    Build a ChatCompletionResponse, parsing tool calls from the text if tools were requested.
+    """
+    tool_calls_list, remaining_text = [], response_text
+
+    # Only parse tool calls if the request had tools
+    if has_tools(req_body):
+        tool_calls_list, remaining_text = parse_tool_calls(response_text)
+
+    if tool_calls_list:
+        # Build response with tool_calls
+        tc_objects = [
+            ToolCall(
+                id=tc["id"],
+                type="function",
+                function=FunctionCall(
+                    name=tc["function"]["name"],
+                    arguments=tc["function"]["arguments"],
+                ),
+            )
+            for tc in tool_calls_list
+        ]
+        response_message = ChatMessageResponse(
+            role="assistant",
+            content=remaining_text if remaining_text.strip() else None,
+            tool_calls=tc_objects,
+            thinking=thinking if thinking else None,
+        )
+        return ChatCompletionResponse(
+            id=response_id,
+            model=model,
+            choices=[
+                ChatMessageResponseChoice(
+                    message=response_message,
+                    finish_reason="tool_calls",
+                )
+            ],
+        )
+    else:
+        # Normal response without tool calls
+        response_message = ChatMessageResponse(
+            role="assistant",
+            content=response_text,
+            thinking=thinking if thinking else None,
+        )
+        return ChatCompletionResponse(
+            id=response_id,
+            model=model,
+            choices=[
+                ChatMessageResponseChoice(message=response_message)
+            ],
+        )
 
 
 def _build_stream_chunk(
@@ -320,12 +390,24 @@ def _prepare_messages(req_body: ChatCompletionRequest) -> Tuple[str, List[Tuple[
     system_messages = []
     dialogue_messages = []
 
-    for msg in req_body.messages:
-        if msg.role == "system":
-            if msg.content.strip():
-                system_messages.append(msg.content.strip())
+    # ★ If tools are present, inject tool definitions into system prompt
+    if has_tools(req_body):
+        tools_prompt = build_tools_system_prompt([t.dict() for t in req_body.tools])
+        if tools_prompt:
+            system_messages.append(tools_prompt)
+
+    # ★ Convert tool/function role messages to text before processing
+    raw_messages = [msg.dict() for msg in req_body.messages]
+    converted_messages = format_tool_messages_as_text(raw_messages)
+
+    for msg in converted_messages:
+        role = msg.get("role", "")
+        content = msg.get("content", "") or ""
+        if role == "system":
+            if content.strip():
+                system_messages.append(content.strip())
             continue
-        dialogue_messages.append((msg.role, msg.content, msg.thinking or ""))
+        dialogue_messages.append((role, content, msg.get("thinking", "") or ""))
 
     if not dialogue_messages:
         raise HTTPException(
@@ -350,15 +432,27 @@ def _prepare_messages(req_body: ChatCompletionRequest) -> Tuple[str, List[Tuple[
 
 
 def _prepare_messages_lite(req_body: ChatCompletionRequest) -> str:
-    """Lite 模式：只提取最后一条 user 消息，支持 system 指令合并"""
+    """Lite 模式：只提取最后一条 user 消息，支持 system 指令合并 + tools"""
     system_messages = []
     user_prompt = ""
 
-    for msg in req_body.messages:
-        if msg.role == "system" and msg.content.strip():
-            system_messages.append(msg.content.strip())
-        elif msg.role == "user":
-            user_prompt = msg.content
+    # ★ If tools are present, inject tool definitions into system prompt
+    if has_tools(req_body):
+        tools_prompt = build_tools_system_prompt([t.dict() for t in req_body.tools])
+        if tools_prompt:
+            system_messages.append(tools_prompt)
+
+    # ★ Convert tool/function role messages to text
+    raw_messages = [msg.dict() for msg in req_body.messages]
+    converted_messages = format_tool_messages_as_text(raw_messages)
+
+    for msg in converted_messages:
+        role = msg.get("role", "")
+        content = msg.get("content", "") or ""
+        if role == "system" and content.strip():
+            system_messages.append(content.strip())
+        elif role == "user":
+            user_prompt = content
 
     if not user_prompt.strip():
         raise HTTPException(status_code=400, detail="The messages list must contain at least one user message.")
@@ -843,14 +937,8 @@ async def _handle_lite_request(
                 raise NotionUpstreamError("Notion upstream returned empty content.", retriable=True)
 
             response_text = full_text if full_text.strip() else "[assistant_no_visible_content]"
-            return ChatCompletionResponse(
-                id=response_id,
-                model=req_body.model,
-                choices=[
-                    ChatMessageResponseChoice(
-                        message=ChatMessage(role="assistant", content=response_text)
-                    )
-                ],
+            return _build_response_with_tool_parsing(
+                response_id, req_body.model, response_text, req_body
             )
 
         except NotionUpstreamError as exc:
@@ -1028,20 +1116,10 @@ async def _handle_standard_request(
 
             response_text = full_text if full_text.strip() else "[assistant_no_visible_content]"
 
-            # 构建响应
-            response_message = ChatMessage(role="assistant", content=response_text)
-
-            # 如果有 thinking，添加到扩展字段（前端会读取）
-            if thinking_parts:
-                response_message.thinking = "".join(thinking_parts)
-
-            # 构建响应
-            response_obj = ChatCompletionResponse(
-                id=response_id,
-                model=req_body.model,
-                choices=[
-                    ChatMessageResponseChoice(message=response_message)
-                ],
+            # ★ Build response with tool call parsing
+            merged_thinking = "".join(thinking_parts).strip() if thinking_parts else ""
+            response_obj = _build_response_with_tool_parsing(
+                response_id, req_body.model, response_text, req_body, thinking=merged_thinking
             )
 
             # 如果有搜索结果，添加到扩展字段（前端会读取）
@@ -1590,14 +1668,8 @@ async def create_chat_completion(
                 response.headers["X-Memory-Status"] = "degraded"
 
             response_text = full_text if full_text.strip() else "[assistant_no_visible_content]"
-            return ChatCompletionResponse(
-                id=response_id,
-                model=req_body.model,
-                choices=[
-                    ChatMessageResponseChoice(
-                        message=ChatMessage(role="assistant", content=response_text)
-                    )
-                ],
+            return _build_response_with_tool_parsing(
+                response_id, req_body.model, response_text, req_body, thinking=merged_thinking
             )
         except NotionUpstreamError as exc:
             if client is not None and exc.retriable:

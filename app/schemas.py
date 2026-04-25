@@ -1,6 +1,32 @@
 import time
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 from pydantic import BaseModel, Field
+
+# ================================
+# Tool / Function Calling Schema
+# ================================
+
+class FunctionDefinition(BaseModel):
+    """OpenAI function definition"""
+    name: str
+    description: Optional[str] = None
+    parameters: Optional[Dict[str, Any]] = None
+
+class ToolDefinition(BaseModel):
+    """OpenAI tool definition"""
+    type: str = "function"
+    function: FunctionDefinition
+
+class FunctionCall(BaseModel):
+    """A function call in a tool_call"""
+    name: str
+    arguments: str  # JSON string
+
+class ToolCall(BaseModel):
+    """A tool call from the assistant"""
+    id: str
+    type: str = "function"
+    function: FunctionCall
 
 # ================================
 # 请求相关 Schema (Chat Completion)
@@ -8,9 +34,13 @@ from pydantic import BaseModel, Field
 
 class ChatMessage(BaseModel):
     """单条对话消息"""
-    role: Literal["user", "assistant", "system"]
-    content: str
+    role: Literal["user", "assistant", "system", "tool", "function"]
+    content: Optional[str] = None
     thinking: Optional[str] = None
+    # Tool calling fields
+    tool_calls: Optional[List[ToolCall]] = None
+    tool_call_id: Optional[str] = None
+    name: Optional[str] = None
 
 class ChatCompletionRequest(BaseModel):
     """
@@ -22,15 +52,25 @@ class ChatCompletionRequest(BaseModel):
     stream: bool = Field(default=False, description="Whether to stream the response as SSE.")
     temperature: Optional[float] = Field(default=None, description="Sampling temperature.")
     conversation_id: Optional[str] = Field(default=None, description="Extension for stateful conversation tracking.")
+    # Tool calling fields
+    tools: Optional[List[ToolDefinition]] = Field(default=None, description="List of tools the model may call.")
+    tool_choice: Optional[Union[str, Dict[str, Any]]] = Field(default=None, description="Controls tool usage.")
 
 # ================================
 # 非流式返回 Schema
 # ================================
 
+class ChatMessageResponse(BaseModel):
+    """Response message (supports tool_calls)"""
+    role: str = "assistant"
+    content: Optional[str] = None
+    thinking: Optional[str] = None
+    tool_calls: Optional[List[ToolCall]] = None
+
 class ChatMessageResponseChoice(BaseModel):
     """非流式响应的选项"""
     index: int = 0
-    message: ChatMessage
+    message: Union[ChatMessage, ChatMessageResponse]
     finish_reason: str = "stop"
 
 class ChatCompletionResponse(BaseModel):
@@ -52,10 +92,23 @@ class ChatCompletionResponse(BaseModel):
 # 流式返回 Schema (供内部组织)
 # ================================
 
+class ToolCallChunkFunction(BaseModel):
+    """Function info in a streaming tool call chunk"""
+    name: Optional[str] = None
+    arguments: Optional[str] = None
+
+class ToolCallChunk(BaseModel):
+    """Tool call chunk for streaming"""
+    index: int = 0
+    id: Optional[str] = None
+    type: Optional[str] = None
+    function: Optional[ToolCallChunkFunction] = None
+
 class ChatCompletionChunkDelta(BaseModel):
     """SSE Delta Block"""
     content: Optional[str] = None
     role: Optional[str] = None
+    tool_calls: Optional[List[ToolCallChunk]] = None
 
 class ChatCompletionChunkChoice(BaseModel):
     """SSE Choice Block"""

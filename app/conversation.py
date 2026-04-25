@@ -1880,6 +1880,15 @@ async def compress_round_if_needed(manager: ConversationManager, conversation_id
         )
 
 
+# 默认系统提示词：确保模型自然回复，不分析用户方言或拒绝回答
+DEFAULT_SYSTEM_PROMPT = (
+    "You are a helpful AI assistant. Respond naturally in the same language as the user. "
+    "Be concise, direct, and helpful. Do not analyze the user's language or dialect. "
+    "Do not mention Notion or that you are a Notion assistant. "
+    "Just answer the user's question directly."
+)
+
+
 def build_lite_transcript(user_prompt: str, model_name: str) -> list[dict[str, Any]]:
     """构建 Lite 模式的最简 transcript（只有 config + user）"""
     from app.model_registry import get_notion_model, get_thread_type
@@ -1888,6 +1897,10 @@ def build_lite_transcript(user_prompt: str, model_name: str) -> list[dict[str, A
 
     notion_model = get_notion_model(model_name)
     thread_type = get_thread_type(model_name)
+
+    # 如果用户消息中没有自带 system 指令，注入默认系统提示词
+    if "[System Instructions:" not in user_prompt:
+        user_prompt = f"[System Instructions: {DEFAULT_SYSTEM_PROMPT}]\n\n{user_prompt}"
 
     transcript = [
         {
@@ -1967,13 +1980,24 @@ def build_standard_transcript(
 
     for msg in messages:
         role = msg.get("role")
-        content = msg.get("content", "")
+        content = msg.get("content", "") or ""
 
         if role == "system":
             system_instructions.append(content)
         elif role == "user":
             user_messages.append(content)
         elif role == "assistant":
+            # Check for tool_calls in assistant message
+            tool_calls = msg.get("tool_calls", [])
+            if tool_calls:
+                # Convert tool calls to text
+                parts = [content] if content else []
+                for tc in tool_calls:
+                    func = tc.get("function", {}) if isinstance(tc, dict) else {}
+                    tc_name = func.get("name", "unknown")
+                    tc_args = func.get("arguments", "{}")
+                    parts.append(f'<tool_call>\n{{"name": "{tc_name}", "arguments": {tc_args}}}\n</tool_call>')
+                content = "\n".join(parts)
             # assistant 消息单独处理
             transcript.append({
                 "id": str(uuid.uuid4()),
@@ -1985,6 +2009,21 @@ def build_standard_transcript(
                     }
                 ]
             })
+        elif role in ("tool", "function"):
+            # Convert tool result to user message
+            name = msg.get("name", "")
+            tool_call_id = msg.get("tool_call_id", "")
+            result_text = f"[Tool result"
+            if name:
+                result_text += f" for {name}"
+            if tool_call_id:
+                result_text += f" (id: {tool_call_id})"
+            result_text += f"]: {content}"
+            user_messages.append(result_text)
+
+    # 如果没有任何 system 指令，注入默认系统提示词
+    if not system_instructions:
+        system_instructions.append(DEFAULT_SYSTEM_PROMPT)
 
     # 将 system 指令合并到第一条 user 消息（与 Lite/Heavy 模式保持一致）
     if user_messages:
