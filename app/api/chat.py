@@ -539,13 +539,13 @@ def _create_standard_stream_generator(
                     authoritative_final_source_type = str(item.get("source_type", "") or "")
                 continue
 
-            # Standard 模式：处理 thinking（使用前端定义的 thinking_chunk 类型）
+            # Standard 模式：处理 thinking（使用 OpenAI 兼容的 reasoning_content 格式）
             if item_type == "thinking":
                 thinking_text = item.get("text", "")
                 if thinking_text:
                     streamed_thinking_accumulator += thinking_text
-                    # 输出 thinking_chunk 事件
-                    yield f"data: {json.dumps({'type': 'thinking_chunk', 'text': thinking_text}, ensure_ascii=False)}\n\n"
+                    # 使用标准 OpenAI 格式输出 thinking，放在 delta.reasoning_content 中
+                    yield _build_stream_chunk(response_id, model_name, thinking=thinking_text)
                 continue
 
             # Standard 模式：处理 search（收集起来，最后输出）
@@ -649,16 +649,14 @@ def _create_standard_stream_generator(
                     yield _build_stream_chunk(response_id, model_name, content=final_reply)
                 streamed_content_accumulator = final_reply
 
-        # 输出搜索结果（使用前端定义的 search_metadata 类型）
+        # 输出搜索结果（使用 OpenAI 兼容格式，嵌入到 content delta 中）
         if collected_search_sources or collected_search_queries:
-            search_metadata = {
-                "type": "search_metadata",
-                "searches": {
-                    "queries": collected_search_queries,
-                    "sources": collected_search_sources
-                }
-            }
-            yield f"data: {json.dumps(search_metadata, ensure_ascii=False)}\n\n"
+            search_md = _format_search_results_md({
+                "queries": collected_search_queries,
+                "sources": collected_search_sources,
+            })
+            if search_md:
+                yield _build_stream_chunk(response_id, model_name, content=search_md)
 
         yield _build_stream_chunk(response_id, model_name, finish_reason="stop")
         yield "data: [DONE]\n\n"

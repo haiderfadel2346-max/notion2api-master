@@ -130,8 +130,13 @@ async def api_key_auth(request: Request, call_next):
     if API_KEY:
         # 跳过 OPTIONS 请求和非受保护的静态路由（如果以后有的话）
         if request.url.path.startswith("/v1") and request.method != "OPTIONS":
+            # 支持两种认证方式：
+            # 1. OpenAI 格式: Authorization: Bearer <key>
+            # 2. Anthropic 格式: x-api-key: <key>
             auth_header = request.headers.get("Authorization", "")
-            if not auth_header.startswith("Bearer ") or auth_header.split(" ")[1] != API_KEY:
+            x_api_key = request.headers.get("x-api-key", "")
+            bearer_key = auth_header.split(" ", 1)[1] if auth_header.startswith("Bearer ") else ""
+            if bearer_key != API_KEY and x_api_key != API_KEY:
                 return JSONResponse(
                     status_code=401,
                     content={
