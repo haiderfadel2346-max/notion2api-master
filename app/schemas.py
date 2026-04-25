@@ -67,6 +67,16 @@ class ChatMessageResponse(BaseModel):
     thinking: Optional[str] = None
     tool_calls: Optional[List[ToolCall]] = None
 
+    model_config = {"json_schema_extra": {"exclude_none": True}}
+
+    def model_dump(self, **kwargs):
+        kwargs.setdefault("exclude_none", True)
+        return super().model_dump(**kwargs)
+
+    def dict(self, **kwargs):
+        kwargs.setdefault("exclude_none", True)
+        return super().dict(**kwargs)
+
 class ChatMessageResponseChoice(BaseModel):
     """非流式响应的选项"""
     index: int = 0

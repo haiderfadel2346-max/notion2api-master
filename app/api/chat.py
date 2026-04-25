@@ -387,8 +387,13 @@ def _extract_recall_query(text: str) -> str:
 
 
 def _prepare_messages(req_body: ChatCompletionRequest) -> Tuple[str, List[Tuple[str, str, str]], str]:
+    from app.conversation import DEFAULT_SYSTEM_PROMPT
+
     system_messages = []
     dialogue_messages = []
+
+    # ★ Always inject identity override as the FIRST system instruction
+    system_messages.append(DEFAULT_SYSTEM_PROMPT)
 
     # ★ If tools are present, inject tool definitions into system prompt
     if has_tools(req_body):
